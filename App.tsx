@@ -28,9 +28,10 @@ import {
   rect,
   TextAlign,
   Skia,
-  useFonts,
   vec,
   Paint,
+  Text,
+  useFont,
 } from '@shopify/react-native-skia';
 import TeleGroteskNextRegular from './TeleGroteskNext-Regular.ttf';
 import {epg, epgMap, channelsBrief} from './epgMock';
@@ -92,7 +93,7 @@ const generateTimeline = () => {
 };
 
 const CEL = memo(
-  ({program}) => {
+  ({program, font}: {program: any; font: any}) => {
     const rctMargin = rect(
       program.x,
       program.y,
@@ -100,12 +101,46 @@ const CEL = memo(
       ROW_HEIGHT,
     );
 
+    // Ořez textu s „…“ podle šířky buňky
+    const ellipsize = (fnt, txt, maxW) => {
+      if (!fnt || !txt) return '';
+      if (fnt.getTextWidth(txt) <= maxW) return txt;
+      let lo = 0,
+        hi = txt.length;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        const candidate = txt.slice(0, mid) + '…';
+        if (fnt.getTextWidth(candidate) <= maxW) lo = mid + 1;
+        else hi = mid;
+      }
+      const cut = Math.max(0, lo - 1);
+      return cut <= 0 ? '…' : txt.slice(0, cut) + '…';
+    };
+
+    const PADDING_X = 8;
+    const maxTextW = Math.max(0, program.width - 10 - 2 * PADDING_X);
+    const text = font
+      ? ellipsize(font, program.programName || '', maxTextW)
+      : '';
+    // baseline Y – vizuální centrování do řádku
+    const baselineY =
+      program.y + ROW_HEIGHT / 2 + (font ? font.getSize() * 0.35 : 5);
+
     return (
       <>
         {program.width > 25 && (
           <Group clip={rctMargin} key={`programCell${program.programId}`}>
             <Group layer={<Paint opacity={program.isAgeBlocked ? 0.5 : 1} />} />
             <Group layer={<Paint opacity={0.5} />} />
+            {font && text ? (
+              <Text
+                x={program.x + PADDING_X}
+                y={baselineY}
+                text={text}
+                font={font}
+                color="white"
+              />
+            ) : null}
           </Group>
         )}
       </>
@@ -119,12 +154,12 @@ const CEL = memo(
   },
 );
 const ROW = memo(
-  ({row}) => {
+  ({row, font}: {row: any; font: any}) => {
     'use forget';
 
-    return row.programs.map((program, index) => (
+    return row.programs.map((program: any, index: number) => (
       <Group key={`row${program.programId}`}>
-        <CEL program={program} />
+        <CEL program={program} font={font} />
         <Line
           p1={vec(program.x + program.width, program.y)}
           p2={vec(program.x + program.width, program.y + ROW_HEIGHT)}
@@ -153,16 +188,18 @@ const ROW = memo(
 );
 
 const useComponentSize = () => {
-  const [size, setSize] = useState(null);
+  const [size, setSize] = useState<{width: number; height: number} | null>(
+    null,
+  );
 
-  const onLayout = useCallback(event => {
+  const onLayout = useCallback((event: any) => {
     const {width: widthIn, height: heightIn} = event.nativeEvent.layout;
     const width = widthIn < heightIn ? heightIn : widthIn;
     const height = widthIn < heightIn ? widthIn : heightIn;
     setSize({width, height});
   }, []);
 
-  return [size, onLayout];
+  return [size, onLayout] as const;
 };
 
 export const getDateForEpgFetch = (date: Date | null = null) => {
@@ -179,14 +216,15 @@ const selectedDate = new Date();
 const EPG = memo(
   () => {
     'use forget';
+    const font = useFont(TeleGroteskNextRegular, 14); // případně uprav velikost
     const timeline = useMemo(() => generateTimeline(), []);
     const [size, onLayout] = useComponentSize();
-    const [scroll, setScroll] = useState([0, 0]);
+    const [scroll, setScroll] = useState<[number, number]>([0, 0]);
     const w = useSharedValue(size?.width || 0);
-    const h = useSharedValue(size?.width || 0);
-    const [recycled, setRecycled] = useState([]);
-    const [cuttedEpg, setCuttedEpg] = useState({});
-    const cuttedEpgRef = useRef({});
+    const h = useSharedValue(size?.height || 0);
+    const [recycled, setRecycled] = useState<{y: number; key: string}[]>([]);
+    const [cuttedEpg, setCuttedEpg] = useState<number>(0);
+    const cuttedEpgRef = useRef<{[key: number]: any[]}>({});
     const scrollRef = useRef([0, 0]);
     const processing = useRef(false);
     const formattedDate = '2025-04-09';
@@ -225,31 +263,25 @@ const EPG = memo(
       channelsBrief.array.length * ROW_HEIGHT + ROW_HEIGHT;
 
     const setScrollThrottled = useCallback(
-      _.throttle((_x, offset, _y) => {
-        setScroll([scrollRef.current[0], scrollRef.current[1]]);
-      }, 15),
+      _.throttle((newScrollX: number, newScrollY: number) => {
+        if (processing.current) {
+          processing.current = false;
+          setScroll([newScrollX, newScrollY]);
+        }
+      }, 16),
       [],
     );
 
-    const processScroll = useCallback((_x, offset, _y, roundedY) => {
-      scrollRef.current = [_x, offset];
-      if (processing.current === false) {
-        processing.current = true;
-        setScrollThrottled(_x, offset, _y);
-      }
-    }, []);
-
-    useEffect(() => {
-      if (
-        scrollRef.current[0] !== scroll[0] ||
-        scrollRef.current[1] !== scroll[1]
-      ) {
-        processing.current = true;
-        setScrollThrottled([scrollRef.current[0], scrollRef.current[1]]);
-      } else {
-        processing.current = false;
-      }
-    }, [scroll, setScrollThrottled]);
+    const processScroll = useCallback(
+      (scrollX: number, scrollY: number) => {
+        if (!processing.current) {
+          processing.current = true;
+          scrollRef.current = [scrollX, scrollY];
+          setScrollThrottled(scrollX, scrollY);
+        }
+      },
+      [setScrollThrottled],
+    );
 
     useEffect(() => {
       w.set(size?.width || 0);
@@ -271,14 +303,9 @@ const EPG = memo(
       }
     }, [size]);
 
-    // try to comment this out, then the recycling of components and new programs is not computing
+    // Animated reaction to handle scroll position changes
     useAnimatedReaction(
-      () => [
-        translateX.value,
-        Math.floor(-translateY.value / ROW_HEIGHT),
-        translateY.value,
-        Math.round(-translateY.value / ROW_HEIGHT),
-      ],
+      () => [translateX.value, Math.floor(-translateY.value / ROW_HEIGHT)],
 
       (value, previousValue) => {
         if (
@@ -287,54 +314,32 @@ const EPG = memo(
         ) {
           return;
         }
-        runOnJS(processScroll)(-value[0], value[1], value[2], value[3]);
+        runOnJS(processScroll)(-value[0], value[1]);
       },
     );
+    const interval = useSharedValue(0);
+    const x = useSharedValue(0);
+    const y = useSharedValue(0);
 
-    const panGesture = Gesture.Pan()
-      .onStart(() => {
-        prevTranslateX.set(translateX.value);
-        prevTranslateY.set(translateY.value);
-      })
-      .onUpdate(event => {
-        translateX.set(
-          Math.min(
-            Math.max(
-              prevTranslateX.value + event.translationX,
-              -totalContentWidth + w.value,
-            ),
-            0,
-          ),
-        );
-        translateY.set(
-          Math.min(
-            Math.max(
-              prevTranslateY.value + event.translationY,
-              -totalContentHeight + h.value,
-            ),
-            0,
-          ),
-        );
-      })
-      .onEnd(event => {
-        translateX.set(
-          withDecay({
-            velocity: event.velocityX,
-            clamp: [-totalContentWidth + w.value, 0],
-          }),
-        );
-        translateY.set(
-          withDecay({
-            velocity: event.velocityY,
-            clamp: [-totalContentHeight + h.value, 0],
-          }),
-        );
-      });
+    const panGesture = Gesture.Pan().onUpdate(event => {
+      if (interval.value) {
+        return;
+      }
+      interval.value = setInterval(() => {
+        'worklet';
+
+        translateX.set(x.value + 1 * -5);
+        translateY.set(y.value + 1 * -5);
+
+        x.value += 1 * -5;
+        y.value += 1 * -5;
+      }, 16);
+    });
 
     useEffect(() => {
       const from = 0;
       const to = channelsBrief.array.length;
-      const out = {};
+      const out: {[key: number]: any[]} = {};
 
       if (channelsBrief.array.length > 0 && channels.length > 0) {
         let rowIndex = 0 + from;
@@ -375,7 +380,7 @@ const EPG = memo(
                   channelName:
                     channelsBrief.array[
                       channelsBrief.map[ch.items[n].channelId]
-                    ].channelName,
+                    ]?.name || `Channel ${ch.channelId}`,
                   start: new Date(ch.items[n].start),
                   end: new Date(ch.items[n].end),
                   programName: ch.items[n].title,
@@ -398,7 +403,7 @@ const EPG = memo(
         setCuttedEpg(Date.now());
       }
       return () => {
-        Object.keys(out).forEach(k => delete out[k]);
+        Object.keys(out).forEach(k => delete out[parseInt(k)]);
       };
     }, [formattedDate, channels, epgMap, channelsBrief]);
 
@@ -424,7 +429,7 @@ const EPG = memo(
 
       const n = Math.floor(scroll[1] / VISIBLE_ROWS_TO) + 1;
 
-      const updatedArray = [];
+      const updatedArray: any[] = [];
       recycled.forEach(o => {
         const computedY = o.y + (n - 1) * VISIBLE_ROWS_TO;
         const newY =
@@ -440,9 +445,9 @@ const EPG = memo(
 
         const res = {
           programs: cuttedEpgRef.current[newY].filter(
-            program =>
+            (program: any) =>
               program.x + program.width > scroll[0] &&
-              program.x < scroll[0] + size.width,
+              program.x < scroll[0] + (size?.width ?? 0),
           ),
           key: o.key,
           y: newY,
@@ -452,17 +457,11 @@ const EPG = memo(
       });
 
       const c = updatedArray.map(row => (
-        <ROW
-          scroll={scroll}
-          row={row}
-          totalContentWidth={totalContentWidth}
-          key={row.key}
-          program={row.program}
-        />
+        <ROW row={row} key={row.key} font={font} />
       ));
       updatedArray.length = 0;
       return c;
-    }, [cuttedEpg, recycled, scroll, size]);
+    }, [cuttedEpg, recycled, scroll, size, font]);
 
     const RowLines = useMemo(
       () =>
